@@ -18,6 +18,8 @@ import argparse
 import cv2
 #Ultralytics’ YOLO class: wraps model loading + inference
 from ultralytics import YOLO
+#Mediapipe: used for additional computer vision tasks like hand tracking
+import mediapipe as mp
 
 #Small helper to open either a video file or a webcam cleanly on macOS
 def open_capture(src_arg: str):
@@ -67,6 +69,19 @@ def main():
     #Open the capture device or file based on --source
     cap = open_capture(args.source)
 
+    #Initiating Media Pipe
+    mp_hands = mp.solutions.hands #Instantiate the Hands model
+    mp_draw = mp.solutions.drawing_utils #Utility for drawing the landmarks
+    mp_style = mp.solutions.drawing_styles #Predefined drawing styles
+    
+    #Set up the Hands classifier: static images off, max 2 hands, min detection + tracking confidence 0.5
+    hands = mp_hands.Hands(static_image_mode=False,
+                           max_num_hands=2,
+                           model_complexity=0,
+                           min_detection_confidence=0.5,
+                           min_tracking_confidence=0.5
+                           )
+
     #Create a resizable window for displaying the annotated frames
     cv2.namedWindow("YOLOv11", cv2.WINDOW_NORMAL)
     #Make the window a reasonable size for laptops/monitors
@@ -80,8 +95,41 @@ def main():
         if not ok:
             print("No frame. Exiting.")
             break
+        frame = cv2.flip(frame, 1)  #Flip the frame horizontally (mirror view)
+
+        #Hand Tracking:
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) #Convert the frame to RGB
+        handResult = hands.process(rgb) #Process the frame and find hands
+
+        #If we found any hands, loop over them and draw the landmarks
+        if handResult.multi_hand_landmarks:
+            h, w = frame.shape[:2] #Get height and width of the frame
+            hands_list = handResult.multi_hand_landmarks 
+            hd_list = handResult.multi_handedness or [] # Fallback to empty list if None
+            for i, hand_landmarks in enumerate(hands_list):  
+                if i < len(hd_list) and hd_list[i].classification: # Ensure classification exists
+                    label = hd_list[i].classification[0].label # Get the label safely
+                else:
+                    label = "Unknown" # Fallback label if classification is missing
+
+                #Drawing Hand landmarks
+                mp_draw.draw_landmarks(
+                    frame,
+                    hand_landmarks,
+                    mp_hands.HAND_CONNECTIONS,
+                    mp_style.get_default_hand_landmarks_style(),
+                    mp_style.get_default_hand_connections_style()
+                )
+
+                xs = [int(lm.x * w) for lm in hand_landmarks.landmark]
+                ys = [int(lm.y * h) for lm in hand_landmarks.landmark]
+                x1, x2, y1, y2 = min(xs), max(xs), min(ys), max(ys) #Bounding box coordinates
+                cv2.rectangle(frame, (x1-10, y1-10), (x2+10, y2+10), (0,255,0), 2) # Bounding box
+                cv2.putText(frame, label, (x1, y1-15), # Text label on frame
+                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0), 3) #Font Label
+
         #Run inference on the frame; Ultralytics returns a Results list
-        results = model(frame)          # inference
+        results = model(frame, conf=0.65, iou=0.5) # Modified parameters for better accuracy
         # sk Ultralytics to draw the boxes/labels for us on a copy of the frame
         annotated = results[0].plot()   # draw boxes/labels
         #Show the annotated image in the window we created

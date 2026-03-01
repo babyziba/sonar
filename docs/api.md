@@ -1,4 +1,4 @@
-# docs/api.md — API Documentation
+# docs/api.md API Documentation
 
 ## Component: `app2_vlm_demo.py` Command-Line Interface (CLI)
 

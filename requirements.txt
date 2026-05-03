@@ -1,3 +1,12 @@
 ultralytics
-mediapipe
+lap  # ByteTrack dependency (model.track); ultralytics auto-installs on first run, pinned for reproducibility
+# 0.10.21+ dropped the legacy mp.solutions.* API that hands.py uses.
+# Migrate to mp.tasks.vision.HandLandmarker before unpinning.
+mediapipe==0.10.14
 opencv-python
+numpy
+# Depth Anything v2 (monocular depth) via HuggingFace transformers
+transformers
+accelerate
+# Text OCR (key 'r' reads any text in the current frame)
+easyocr

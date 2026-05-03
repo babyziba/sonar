@@ -18,8 +18,7 @@ The system performs the following tasks:
 - Detects objects using **Ultralytics YOLO11**
 - Bounding Box Rendering in an **OpenCV** display window
 - Hand Landmark Tracking using **MediaPipe**
-- Scene Narration using offline **Text-to-Speech**
-- *(Optional)* LLM-Enhanced Summaries using a local Ollama model
+- Scene Narration using the macOS `say` command on a background thread
 
 ### What You Should See When It Works
 
@@ -27,31 +26,38 @@ When running properly:
 - A video window opens
 - Objects are detected with labeled bounding boxes
 - Hand Landmarks appear when hands are visible
-- The system speaks short scene descriptions (e.g, cardinal direction + relative distance)
-- If  enabled, an LLM-generated summary
+- The system speaks short scene descriptions (e.g. cardinal direction + relative distance)
 
 ---
 
 ## 3. Installation and Setup
 
 ### Step 1) Prerequisites
+- macOS (uses the built-in `say` command for speech)
 - Python **3.9+** recommended
 - A webcam (optional if you run on a video file)
-- macOS, Windows, and Linux are supported
-- (Optional) Ollama installed locally if testing LLM features
 
-To verify Python versions:
+To verify Python version:
 ```bash
-python3 --version     # macOS/Linux   
-python --version      # Windows 
+python3 --version
 ```
 
 ### Step 2) Create and Activate a Virtual Environment (Recommended)
 ```bash
-python -m venv .venv
-source .venv/bin/activate      # macOS/Linux
-# .venv\Scripts\activate       # Windows PowerShell
+python3 -m venv .venv
+source .venv/bin/activate
 ```
-You should now see ```(.venv)``` in your terminal prompt
+You should now see ```(.venv)``` in your terminal prompt.
+
+### Step 3) Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### Step 4) Run
+```bash
+python sonr.py --source 0
+```
+Press `v` to toggle voice, `b` to toggle bounding boxes, `q` or `ESC` to quit. See `docs/api.md` for the full CLI reference.
 
 ---

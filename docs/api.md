@@ -1,107 +1,145 @@
 # docs/api.md API Documentation
 
-## Component: `app2_vlm_demo.py` Command-Line Interface (CLI)
+## Component: `sonr.py` Command-Line Interface (CLI)
 
 ### Name
-**YOLO11 “Talking Objects” Demo + MediaPipe Hands** :contentReference[oaicite:1]{index=1}
+**Sonr — YOLO11 Talking Objects + MediaPipe Hands + Depth Anything v2 + OCR**
 
 ### Short Description
-Runs a real-time object detection loop using **Ultralytics YOLO11** on a webcam or video file, overlays bounding boxes, draws **MediaPipe hand landmarks**, and speaks short scene descriptions (direction + approximate distance) using offline TTS (pyttsx3 or macOS `say`). Optionally, it can request a short rephrased summary from a **local Ollama LLM** without blocking the main CV loop. :contentReference[oaicite:2]{index=2}
+Real-time accessibility vision pipeline. Runs **Ultralytics YOLO11** with **ByteTrack** for object detection + persistent IDs, overlays **MediaPipe** hand landmarks, estimates monocular metric depth via **Depth Anything v2** on a background thread, and speaks short scene descriptions via the macOS `say` command. On demand (key `r`), reads arbitrary text in the frame via EasyOCR.
 
-### Signature or endpoint
-This is a CLI script, so the “signature” is its command usage:
-python app2_vlm_demo.py [--model MODEL] [--source SOURCE] [--conf CONF] [--iou IOU] [--device DEVICE]
-                        [--speak-interval SECONDS] [--speak-on-change] [--tts-backend {auto,pyttsx3,say}]
-                        [--min-speak-hnorm HNORM] [--new-only] [--repeat-after SECONDS]
-                        [--min-stable N] [--hold-seconds SECONDS] [--zone-deadband X] [--dist-deadband X]
-                        [--debug] [--log-every SECONDS] [--quiet-cooldowns] [--no-tty-quit] [--watchdog SECONDS]
-                        [--llm {none,ollama}] [--llm-model NAME] [--llm-url URL] [--llm-timeout SECONDS]
-                        [--llm-image {person,full,none}] [--llm-jpeg-quality Q] [--llm-overlay-seconds SECONDS]
-                        [--llm-auto-speak]
-                        
-### Parameters (name, type, and description of each)
-Input / detection
+### Signature
 
---model (str): YOLO11 model path/name (e.g., yolo11n.pt)
+```
+python sonr.py [--model MODEL] [--source SOURCE] [--conf CONF] [--iou IOU] [--device DEVICE]
+               [--mirror | --no-mirror]
+               [--depth | --no-depth] [--metric-deadband M]
+               [--ocr | --no-ocr]
+               [--speak-interval SECONDS] [--per-item-cooldown SECONDS]
+               [--min-speak-hnorm HNORM]
+               [--min-stable N] [--hold-seconds SECONDS]
+               [--zone-deadband X] [--dist-deadband X]
+               [--no-show] [--no-tty-quit] [--watchdog SECONDS]
+               [--debug] [--log-every SECONDS] [--quiet-cooldowns]
+```
 
---source (str): "0" for webcam or a video file path
+### Parameters
 
---conf (float): detection confidence threshold
+**Input / detection**
 
---iou (float): NMS IoU threshold
+- `--model` (str, default `yolo11n.pt`): YOLO11 model path or name.
+- `--source` (str, default `0`): `0` for the default webcam, an integer index for another, or a video file path.
+- `--conf` (float, default `0.75`): YOLO confidence threshold.
+- `--iou` (float, default `0.5`): NMS IoU threshold.
+- `--device` (str | None): device hint (`cpu`, `cuda`, `mps`). If unset, ultralytics chooses; depth estimator auto-selects MPS on Apple Silicon.
+- `--mirror` / `--no-mirror` (default on): horizontally flip the frame. On for selfie-view webcams (so hand handedness and left/right narration match the user). Off for video files or forward-facing cameras.
 
---device (str | None): device hint (cpu, cuda, mps)
+**Distance (Depth Anything v2)**
 
-Narration / TTS
+- `--depth` / `--no-depth` (default on): use Depth Anything v2 metric-indoor for distance estimates. With `--no-depth`, falls back to a bbox-height heuristic.
+- `--metric-deadband` (float, default `0.3`): hysteresis around metric distance bucket boundaries (meters). Prevents flapping between e.g. "close to you" and "nearby" when an object sits near a boundary.
 
---speak-interval (float): minimum seconds between spoken announcements
+Distance buckets in meters:
+- `≤ 0.7 m` → "very close to you"
+- `≤ 1.5 m` → "close to you"
+- `≤ 3.0 m` → "nearby"
+- `≤ 6.0 m` → "in the distance"
+- `> 6.0 m` → "far away"
 
---speak-on-change (bool flag): speak immediately on phrase changes (still rate-limited)
+**OCR**
 
---tts-backend (str): choose TTS backend (auto, pyttsx3, say)
+- `--ocr` / `--no-ocr` (default on): enable on-demand text reading. Press `r` during the run to OCR the current frame and have the text spoken. Submitted on the unflipped raw frame so mirrored text (when `--mirror` is on) reads correctly.
 
---min-speak-hnorm (float): ignore tiny detections below this normalized bbox height
+**Narration / TTS**
 
---new-only (bool flag): announce only newly stable objects
+- `--speak-interval` (float, default `2.0`): minimum seconds between spoken utterances (anti-spam floor).
+- `--per-item-cooldown` (float, default `8.0`): seconds before the same `track_id` (or `(label, zone)` for untracked detections) can be re-announced. Different items can speak in between, so the system stays responsive without nagging about the same chair every 2 seconds.
+- `--min-speak-hnorm` (float, default `0.05`): ignore detections smaller than this normalized bbox height.
 
---repeat-after (float): allow repeats after N seconds; 0 disables repeats
+**Stability / anti-flicker**
 
-Stability / anti-flicker
+- `--min-stable` (int, default `3`): frames an object must persist before becoming "stable".
+- `--hold-seconds` (float, default `0.75`): keep recently-seen objects alive briefly across frame drops.
+- `--zone-deadband` (float, default `0.06`): hysteresis around left/center/right zone boundaries.
+- `--dist-deadband` (float, default `0.04`): hysteresis around bbox-height distance boundaries (only used when `--no-depth`).
 
---min-stable (int): frames required before an object becomes “stable”
+**Display / runtime**
 
---hold-seconds (float): keep recently seen objects alive briefly
+- `--no-show` (flag): disable the OpenCV preview window.
+- `--debug` (flag): verbose logs (FPS, detections, TTS events, OCR events).
+- `--log-every` (float, default `1.0`): heartbeat log period (seconds).
+- `--quiet-cooldowns` (flag): suppress cooldown-related debug spam.
+- `--no-tty-quit` (flag): ignore the `q` key (ESC still quits).
+- `--watchdog` (float, default `0.0`): exit if no frames arrive for this many seconds. `0` disables.
 
---zone-deadband (float): hysteresis near left/center/right boundaries
+### Interactive keys
 
---dist-deadband (float): hysteresis near distance bucket boundaries
+- `v` — toggle voice on/off
+- `b` — toggle bounding-box drawing
+- `h` — toggle hand-landmark drawing/processing
+- `r` — read text in the current frame (OCR). Speaks "No text found" if nothing detected within 5 s.
+- `q` or `ESC` — quit
 
-Debug / runtime controls
+### TTS behavior
 
---debug (bool flag): verbose logging
+A new phrase drains any pending queued phrases and is enqueued. The currently-speaking utterance is allowed to finish naturally (interrupting mid-word felt jarring during testing, and with phrases capped to ~2 seconds the worst-case lag is small enough to live with).
 
---log-every (float): heartbeat log period (seconds)
+Phrase length is capped (top 3 items by importance, max 2 per zone) to keep individual utterances short. Pluralization is applied (`person → people`, `cup → cups`, etc.).
 
---quiet-cooldowns (bool flag): suppress cooldown spam in logs
+### Threading model
 
---no-tty-quit (bool flag): ignore q key (ESC still quits)
+- **Detection** runs synchronously per frame in the main loop (~50 ms YOLO).
+- **Hand landmarks** run synchronously per frame (~10–20 ms MediaPipe).
+- **Depth estimation** runs on a background thread (`DepthWorker`). Main loop submits the latest frame and reads whatever depth map is currently ready (~125 ms behind on M-series MPS). Until the first inference completes, the bbox-height heuristic is used as a transient fallback.
+- **Text OCR** runs on a background thread (`OcrWorker`). User-triggered via `r`. Receives the unflipped raw frame so mirrored text reads correctly.
+- **TTS** runs on a background thread (`TTSWorker`).
 
---watchdog (float): exit if no frames arrive for this many seconds (0 disables)
+Net effect: main capture/detection loop runs at full YOLO speed; all heavier ML inference is decoupled.
 
-Optional local LLM (Ollama)
+### Errors
 
---llm (str): enable local LLM mode (none or ollama)
+- Dependency missing → import error and exit with install hint.
+- Cannot open video source (bad path, webcam in use, permissions blocked) → early exit with an error.
+- No frames received (camera freeze / bad stream) → may retry; may exit if `--watchdog` is set.
+- HuggingFace download fails → depth or OCR may not initialize; the rest of the pipeline still runs.
 
---llm-model (str): Ollama model name
+### Examples
 
---llm-url (str): Ollama base URL (default http://localhost:11434)
+Default webcam demo:
 
---llm-timeout (float): request timeout (seconds)
+```
+python sonr.py --source 0
+```
 
---llm-image (str): send person crop, full frame, or none
+Lower confidence to catch held objects:
 
---llm-jpeg-quality (int): JPEG quality when sending images
+```
+python sonr.py --source 0 --conf 0.5
+```
 
---llm-overlay-seconds (float): how long overlay text stays visible
+Video file, disable depth (faster), disable mirror (text/plates in scene aren't reversed):
 
---llm-auto-speak (bool flag): auto-speak LLM summary
+```
+python sonr.py --source clip.mp4 --no-mirror --no-depth
+```
 
-### Return values (type and structure):
-None
+### Notes
 
-### Errors or exceptions:
-Dependency missing (e.g., Ultralytics not installed) → import error / friendly message and exit.
-Cannot open video source (bad path, webcam in use, permissions blocked) → program exits early with an error.
-No frames received (camera freeze / bad stream) → may retry; may exit if --watchdog is set.
-TTS backend failure → narration may fail; fallback may be attempted (depending on OS/backend).
-Ollama unreachable / timeout → LLM overlay shows an error message; core detection continues.
+- macOS only: TTS uses the built-in `say` command.
+- Performance on M-series Mac: ~15 fps preview with depth + plates enabled.
+- The metric-indoor depth model saturates outdoors (~6-10 m); use `--no-depth` if you'll be testing outside.
+- MediaPipe hand landmarks are pinned to `mediapipe==0.10.14` because newer versions removed the legacy `solutions` API. See `requirements.txt`.
 
-### One example showing how to call it:
-Webcam demo with narration:
-python app2_vlm_demo.py --source 0 --model yolo11n.pt --conf 0.35
+### Module layout
 
-### Other important info:
-“Distance” is approximate and inferred from bounding box height (not true depth).
-Performance depends on hardware + model size; yolo11n.pt is faster than larger models.
-MediaPipe hand landmarks require good lighting and visible hands for stable tracking.
-Ollama features require a local Ollama server; they are optional and not needed for the core demo.
+The CLI script `sonr.py` orchestrates the following modules:
+
+- `detection.py` — YOLO11 wrapper with ByteTrack (`Detector`, `Detection` with `track_id`).
+- `geometry.py` — left/center/right zone helpers with hysteresis.
+- `distance.py` — distance bucketing (bbox-height fallback + metric depth).
+- `depth.py` — Depth Anything v2 wrapper (`DepthEstimator`) and threaded worker (`DepthWorker`).
+- `tracking.py` — `StableTracker` for frame-to-frame deduplication.
+- `narration.py` — phrase composition with pluralization (`SpeakItem`, `compose_phrase`).
+- `speech.py` — background-thread macOS `say` worker (`TTSWorker`).
+- `hands.py` — MediaPipe hand-landmark overlay (`HandTracker`).
+- `ocr.py` — EasyOCR-based text reader (`OcrWorker`).

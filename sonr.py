@@ -1,147 +1,385 @@
-# Let the OS run this file using whatever `python3` it finds first in PATH
 #!/usr/bin/env python3
-# A short description of what this script does and how to run it
 """
-YOLOv11 Webcam Demo (minimal)
-- Opens a webcam (or video file) and runs YOLOv11.
-- Draws bounding boxes + labels. Press 'q' to quit.
+Sonr — assistive vision: YOLO11 detection + spoken scene narration + hand overlay.
 
 Usage:
-  python app.py                 # webcam index 0
-  python app.py --source 1      # webcam index 1
-  python app.py --source video.mp4
-  python app.py --model yolo11n.pt
+  python sonr.py --source 0
+  python sonr.py --source path/to/video.mp4
+  python sonr.py --model yolo11n.pt --conf 0.35 --speak-interval 2.0
+
+Keys: v = toggle voice, b = toggle boxes, h = toggle hand tracking,
+      r = read text in scene (OCR), q / ESC = quit.
 """
-#Standard library helper to parse --model and --source from the command line
+
+from __future__ import annotations
+
 import argparse
-#OpenCV: used to grab frames from the camera/video and to show a window
+import time
+
 import cv2
-#Ultralytics’ YOLO class: wraps model loading + inference
-from ultralytics import YOLO
-#Mediapipe: used for additional computer vision tasks like hand tracking
-import mediapipe as mp
+import numpy as np
 
-#Small helper to open either a video file or a webcam cleanly on macOS
-def open_capture(src_arg: str):
-    #Docstring explaining what this helper expects and returns
-    """Open webcam if src_arg is a digit, else open as file."""
-    #If the user passed a non-digit (e.g., "video.mp4"), treat it as a file path
-    #and try to open it directly
-    if src_arg and not src_arg.isdigit():
-        cap = cv2.VideoCapture(src_arg)
-        #If OpenCV managed to open the file, we’re good—return the capture handle
-        if cap.isOpened():
-            return cap
-        #If not, bail with a clear error message so the user knows what went wrong
-        raise SystemExit(f"Could not open video file: {src_arg}")
+from detection import Detector
+from distance import dist_with_deadband, metric_with_deadband
+from geometry import zone_with_deadband
+from hands import HandTracker
+from narration import SpeakItem, compose_phrase
+from speech import TTSWorker
+from tracking import StableTracker
 
-    #At this point we expect a webcam index (like "0" or "1")
-    # onvert to int, default to 0 if the string was empty
-    idx = int(src_arg) if src_arg else 0
-    #On macOS, AVFoundation is the most reliable backend; if that fails, try CAP_ANY
-    for api in (cv2.CAP_AVFOUNDATION, cv2.CAP_ANY):
-        #Ask OpenCV to open the webcam at the given index with the chosen backend
-        cap = cv2.VideoCapture(idx, api)
-        #If the device opened, double-check that it can actually deliver a frame
-        if cap.isOpened():
-            ok, _ = cap.read()
-            #Only accept the device if reading a frame works; otherwise release and try next
-            if ok:
-                return cap
-            cap.release()
-    #If we tried the likely backends and still couldn’t open, explain how to fix permissions
-    raise SystemExit(f"Could not open webcam (index {idx}). "
-                     "Enable Camera for Terminal/IDE in System Settings → Privacy & Security → Camera.")
 
-#Main entry point for parsing args, loading the model, and running the loop
-def main():
-    #Set up a tiny CLI: just --model (weights) and --source (camera index or file path)
+WINDOW_NAME = "YOLO11 Talking Objects"
+
+
+def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    #Which YOLOv11 weights to load; the 'n' variant is small and quick to test
-    ap.add_argument("--model", default="yolo11n.pt", help="YOLOv11 weights")
-    #Camera index as a string (e.g., "0" or "1") or a file path to a video
-    ap.add_argument("--source", default="0", help="Webcam index (e.g., 0/1) or path to video")
-    # ctually parse the command-line arguments into an object
-    args = ap.parse_args()
+    ap.add_argument("--model", type=str, default="yolo11n.pt", help="YOLO11 model path or name")
+    ap.add_argument("--source", type=str, default="0", help="Video source (0 for webcam)")
+    ap.add_argument("--conf", type=float, default=0.75, help="Confidence threshold")
+    ap.add_argument("--iou", type=float, default=0.5, help="NMS IoU")
+    ap.add_argument("--device", type=str, default=None, help="cuda, cpu, or mps")
+    ap.add_argument("--speak-interval", type=float, default=2.0,
+                    help="Seconds between announcements of the same phrase")
+    ap.add_argument("--no-show", dest="show", action="store_false",
+                    help="Disable the OpenCV preview window")
+    ap.set_defaults(show=True)
 
-    #Load the YOLOv11 model from the given weights (downloads if not cached)
-    model = YOLO(args.model)
-    #Open the capture device or file based on --source
-    cap = open_capture(args.source)
+    ap.add_argument("--debug", action="store_true",
+                    help="Verbose logs: FPS, detections, TTS events")
+    ap.add_argument("--log-every", type=float, default=1.0,
+                    help="Seconds between debug log heartbeats")
+    ap.add_argument("--min-stable", type=int, default=3,
+                    help="Frames an object must persist before speaking")
+    ap.add_argument("--hold-seconds", type=float, default=0.75,
+                    help="Post-detect hold to reduce flicker (seconds)")
+    ap.add_argument("--no-tty-quit", action="store_true",
+                    help="Ignore 'q' key; use ESC only to quit")
+    ap.add_argument("--watchdog", type=float, default=0.0,
+                    help="Exit if no frames arrive for this many seconds (0 to disable)")
+    ap.add_argument("--quiet-cooldowns", action="store_true",
+                    help="Suppress cooldown logs even with --debug")
+    ap.add_argument("--zone-deadband", type=float, default=0.06,
+                    help="Sticky band around left/center/right boundaries")
+    ap.add_argument("--dist-deadband", type=float, default=0.04,
+                    help="Sticky band around distance boundaries")
+    ap.add_argument("--min-speak-hnorm", type=float, default=0.05,
+                    help="Minimum bbox height (normalized) required to speak an object")
+    ap.add_argument("--per-item-cooldown", type=float, default=8.0,
+                    help="Seconds before the same (label, zone, distance) item can be re-announced")
+    ap.add_argument("--mirror", action=argparse.BooleanOptionalAction, default=True,
+                    help="Mirror the frame horizontally (correct for selfie-view webcams)")
+    ap.add_argument("--depth", action=argparse.BooleanOptionalAction, default=True,
+                    help="Use Depth Anything v2 for metric distance (else fall back to bbox-height)")
+    ap.add_argument("--metric-deadband", type=float, default=0.3,
+                    help="Hysteresis around metric distance bucket boundaries (meters)")
+    ap.add_argument("--ocr", action=argparse.BooleanOptionalAction, default=True,
+                    help="Enable on-demand text OCR (press 'r' to read text in current frame)")
+    return ap.parse_args()
 
-    #Initiating Media Pipe
-    mp_hands = mp.solutions.hands #Instantiate the Hands model
-    mp_draw = mp.solutions.drawing_utils #Utility for drawing the landmarks
-    mp_style = mp.solutions.drawing_styles #Predefined drawing styles
-    
-    #Set up the Hands classifier: static images off, max 2 hands, min detection + tracking confidence 0.5
-    hands = mp_hands.Hands(static_image_mode=False,
-                           max_num_hands=2,
-                           model_complexity=0,
-                           min_detection_confidence=0.5,
-                           min_tracking_confidence=0.5
-                           )
 
-    #Create a resizable window for displaying the annotated frames
-    cv2.namedWindow("YOLOv11", cv2.WINDOW_NORMAL)
-    #Make the window a reasonable size for laptops/monitors
-    cv2.resizeWindow("YOLOv11", 960, 540)
+def open_capture(source: str):
+    """Open webcam (numeric source) or video file. Returns (capture, is_webcam)."""
+    try:
+        cam_idx = int(source)
+        return cv2.VideoCapture(cam_idx, cv2.CAP_AVFOUNDATION), True
+    except ValueError:
+        return cv2.VideoCapture(source), False
 
-    #Frame-processing loop: read → run YOLO → draw → show → check for 'q'
-    while True:
-        #Grab the next frame from the camera/video; ok is False at EOF or on error
-        ok, frame = cap.read()
-        #If we can’t read a frame, stop the loop cleanly
-        if not ok:
-            print("No frame. Exiting.")
-            break
-        frame = cv2.flip(frame, 1)  #Flip the frame horizontally (mirror view)
 
-        #Hand Tracking:
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) #Convert the frame to RGB
-        handResult = hands.process(rgb) #Process the frame and find hands
+def warmup(cap, tries: int = 40, pause: float = 0.1) -> bool:
+    for _ in range(tries):
+        ok, _ = cap.read()
+        if ok:
+            return True
+        time.sleep(pause)
+    return False
 
-        #If we found any hands, loop over them and draw the landmarks
-        if handResult.multi_hand_landmarks:
-            h, w = frame.shape[:2] #Get height and width of the frame
-            hands_list = handResult.multi_hand_landmarks 
-            hd_list = handResult.multi_handedness or [] # Fallback to empty list if None
-            for i, hand_landmarks in enumerate(hands_list):  
-                if i < len(hd_list) and hd_list[i].classification: # Ensure classification exists
-                    label = hd_list[i].classification[0].label # Get the label safely
+
+def dbg(enabled: bool, *args) -> None:
+    if enabled:
+        print(*args)
+
+
+def main() -> None:
+    args = parse_args()
+
+    detector = Detector(args.model, conf=args.conf, iou=args.iou, device=args.device)
+    hand_tracker = HandTracker()
+    tts = TTSWorker()
+    tracker = StableTracker(min_stable_frames=args.min_stable, hold_seconds=args.hold_seconds)
+
+    depth_estimator = None
+    depth_worker = None
+    if args.depth:
+        from depth import DepthEstimator, DepthWorker
+        print("Loading Depth Anything v2 (first run downloads ~100 MB)...")
+        depth_estimator = DepthEstimator(device=args.device)
+        depth_worker = DepthWorker(depth_estimator)
+        print(f"Depth model loaded on device: {depth_estimator.device} (running async)")
+
+    ocr_worker = None
+    if args.ocr:
+        from ocr import OcrWorker
+        print("Loading EasyOCR (first run downloads ~64 MB)...")
+        ocr_worker = OcrWorker()
+        print("OCR ready. Press 'r' to read text in the current scene.")
+
+    cap, is_webcam = open_capture(args.source)
+    if not cap or not cap.isOpened():
+        raise SystemExit(f"Could not open source: {args.source}")
+
+    if args.show:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW_NAME, 960, 540)
+
+    if not warmup(cap) and is_webcam:
+        try:
+            alt_idx = 1 if int(args.source) == 0 else 0
+            alt = cv2.VideoCapture(alt_idx, cv2.CAP_AVFOUNDATION)
+            if warmup(alt):
+                cap.release()
+                cap = alt
+                print(f"Switched to camera index {alt_idx}")
+        except ValueError:
+            pass
+
+    print("Press v=voice, b=boxes, h=hands, r=read text, q=quit.")
+
+    last_zone_seen: dict[str, str] = {}
+    last_dist_seen: dict[str, str] = {}
+    announced_at: dict[tuple[str, str, str], float] = {}
+    last_any_spoken = 0.0
+    user_pending: dict[str, float] = {}  # tag -> deadline for user-triggered OCR/plate jobs
+
+    draw_boxes = True
+    draw_hands = True
+    last_log = time.time()
+    frame_counter = 0
+    fps_last = time.time()
+    fps = 0.0
+    last_frame_time = time.time()
+
+    try:
+        while True:
+            now = time.time()
+
+            ret, raw_frame = cap.read()
+            if ret:
+                last_frame_time = now
+                # `frame` is what YOLO / MediaPipe / depth / display all use.
+                # `raw_frame` stays unflipped for OCR — flipped text is unreadable.
+                frame = cv2.flip(raw_frame, 1) if args.mirror else raw_frame
+            else:
+                dbg(args.debug, "[dbg] no frame from camera")
+                if args.show:
+                    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(placeholder, "No frame received. Retrying...",
+                                (30, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                                (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.imshow(WINDOW_NAME, placeholder)
+                    cv2.waitKey(1)
+                if is_webcam:
+                    cap.release()
+                    cap, _ = open_capture(args.source)
+                time.sleep(0.1)
+                if args.watchdog > 0 and (now - last_frame_time) > args.watchdog:
+                    print(f"[exit] watchdog: no frames for {args.watchdog}s")
+                    break
+                continue
+
+            H, W = frame.shape[:2]
+
+            if depth_worker is not None:
+                depth_worker.submit(frame)
+            depth_map = depth_worker.get_depth() if depth_worker is not None else None
+
+            infer_start = time.time()
+            detections = detector.detect(frame)
+            infer_time = time.time() - infer_start
+
+            frame_counter += 1
+            if now - fps_last >= 0.5:
+                fps = frame_counter / (now - fps_last)
+                frame_counter = 0
+                fps_last = now
+
+            present_keys: list[tuple[str, str, str]] = []
+            summary: dict[tuple[str, str, str], dict] = {}
+
+            for det in detections:
+                # Hysteresis state per-track when available, else per-label.
+                hyst_key = det.track_id if det.track_id is not None else det.label
+                prev_zone = last_zone_seen.get(hyst_key)
+                zone = zone_with_deadband(det.cx_norm, prev_zone, args.zone_deadband)
+                last_zone_seen[hyst_key] = zone
+
+                prev_dist = last_dist_seen.get(hyst_key)
+                if depth_map is not None:
+                    from depth import DepthEstimator
+                    meters = DepthEstimator.sample_at_bbox(depth_map, det.bbox)
+                    dist = metric_with_deadband(meters, prev_dist, args.metric_deadband)
                 else:
-                    label = "Unknown" # Fallback label if classification is missing
+                    dist = dist_with_deadband(det.h_norm, prev_dist, args.dist_deadband)
+                last_dist_seen[hyst_key] = dist
 
-                #Drawing Hand landmarks
-                mp_draw.draw_landmarks(
-                    frame,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_style.get_default_hand_landmarks_style(),
-                    mp_style.get_default_hand_connections_style()
-                )
+                key = (det.label, zone, dist)
+                present_keys.append(key)
 
-                xs = [int(lm.x * w) for lm in hand_landmarks.landmark]
-                ys = [int(lm.y * h) for lm in hand_landmarks.landmark]
-                x1, x2, y1, y2 = min(xs), max(xs), min(ys), max(ys) #Bounding box coordinates
-                cv2.rectangle(frame, (x1-10, y1-10), (x2+10, y2+10), (0,255,0), 2) # Bounding box
-                cv2.putText(frame, label, (x1, y1-15), # Text label on frame
-                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0), 3) #Font Label
+                importance = det.h_norm * det.confidence
+                if key not in summary:
+                    summary[key] = {
+                        "count": 1, "best_score": importance, "best_h": det.h_norm,
+                        "track_ids": [det.track_id],
+                    }
+                else:
+                    summary[key]["count"] += 1
+                    if importance > summary[key]["best_score"]:
+                        summary[key]["best_score"] = importance
+                    if det.h_norm > summary[key]["best_h"]:
+                        summary[key]["best_h"] = det.h_norm
+                    summary[key]["track_ids"].append(det.track_id)
 
-        #Run inference on the frame; Ultralytics returns a Results list
-        results = model(frame, conf=0.65, iou=0.5) # Modified parameters for better accuracy
-        # sk Ultralytics to draw the boxes/labels for us on a copy of the frame
-        annotated = results[0].plot()   # draw boxes/labels
-        #Show the annotated image in the window we created
-        cv2.imshow("YOLOv11", annotated)
-        #Poll the keyboard; if the user pressed 'q', exit the loop
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+                if args.show and draw_boxes:
+                    x1, y1, x2, y2 = det.bbox
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    tid_suffix = f"#{det.track_id}" if det.track_id is not None else ""
+                    cv2.putText(frame, f"{det.label}{tid_suffix} {det.confidence:.2f}",
+                                (int(x1), int(y1) - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
-    #Free the camera/file handle so other apps can use it
-    cap.release()
-    #Close the OpenCV window(s) we opened
-    cv2.destroyAllWindows()
+
+            tracker.update_frame(present_keys, now)
+            stable = tracker.stable_now()
+
+            if ocr_worker is not None:
+                for tag, text in ocr_worker.get_results():
+                    if tag == "user":
+                        phrase = f"It says: {text}"
+                        dbg(args.debug, f"[ocr] {phrase}")
+                        if tts.enabled:
+                            tts.say(phrase)
+                        user_pending.pop(tag, None)
+
+            # Surface "no text found" for user-triggered OCR after a deadline.
+            for tag in list(user_pending.keys()):
+                if now > user_pending[tag]:
+                    if tts.enabled:
+                        tts.say("No text found")
+                    user_pending.pop(tag, None)
+
+            # Age-based GC for announced_at — drop entries older than 4× cooldown.
+            gc_age = max(args.per_item_cooldown * 4, 30.0)
+            for k in list(announced_at.keys()):
+                if (now - announced_at[k]) > gc_age:
+                    announced_at.pop(k, None)
+
+            if args.debug and (now - last_log) >= args.log_every:
+                dbg(True, f"[dbg] fps={fps:.1f} dets={len(detections)} "
+                          f"stable={len(stable)} infer={infer_time*1000:.1f}ms")
+                last_log = now
+
+            def _cooldown_key(tid, label, zone):
+                # Per-track cooldown when ByteTrack assigned an id; otherwise
+                # fall back to (label, zone) so untracked detections still cool down.
+                return tid if tid is not None else ("__notrack__", label, zone)
+
+            speak_items: list[SpeakItem] = []
+            for key, info in summary.items():
+                label, zone, dist = key
+                if key not in stable:
+                    if args.debug and not args.quiet_cooldowns:
+                        dbg(True, f"[tts-skip] not stable yet -> {label} {zone}, {dist} (count={info['count']})")
+                    continue
+                if info["best_h"] < args.min_speak_hnorm:
+                    if args.debug and not args.quiet_cooldowns:
+                        dbg(True, f"[tts-skip] too small -> {label} (h_norm={info['best_h']:.3f})")
+                    continue
+
+                eligible_tids = []
+                for tid in info["track_ids"]:
+                    ck = _cooldown_key(tid, label, zone)
+                    last_t = announced_at.get(ck)
+                    if last_t is None or (now - last_t) >= args.per_item_cooldown:
+                        eligible_tids.append(tid)
+
+                if not eligible_tids:
+                    if args.debug and not args.quiet_cooldowns:
+                        dbg(True, f"[tts-skip] all tracks cooled -> {label} {zone}, {dist}")
+                    continue
+
+                speak_items.append(SpeakItem(
+                    label=label, zone=zone, distance=dist,
+                    count=len(eligible_tids), score=info["best_score"],
+                    track_ids=eligible_tids,
+                ))
+
+            if speak_items:
+                time_since = now - last_any_spoken
+                if time_since < args.speak_interval:
+                    if args.debug and not args.quiet_cooldowns:
+                        dbg(True, f"[tts-skip] interval gate ({time_since:.1f}s < {args.speak_interval}s)")
+                else:
+                    final_phrase = compose_phrase(speak_items)
+                    if final_phrase:
+                        last_any_spoken = now
+                        for it in speak_items:
+                            for tid in it.track_ids:
+                                announced_at[_cooldown_key(tid, it.label, it.zone)] = now
+                        if tts.enabled:
+                            dbg(args.debug, f"[tts] speak -> {final_phrase}")
+                            tts.say(final_phrase)
+                    else:
+                        dbg(args.debug, f"[tts-skip] voice off -> {final_phrase}")
+
+            if args.show:
+                if draw_boxes:
+                    cv2.line(frame, (int(W / 3), 0), (int(W / 3), H), (255, 255, 255), 1)
+                    cv2.line(frame, (int(2 * W / 3), 0), (int(2 * W / 3), H), (255, 255, 255), 1)
+
+                if draw_hands:
+                    hand_tracker.annotate(frame)
+                cv2.imshow(WINDOW_NAME, frame)
+
+                try:
+                    if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                        print("[exit] window closed by OS")
+                        break
+                except cv2.error:
+                    print("[exit] window property check failed; assuming closed")
+                    break
+
+                key = cv2.waitKey(1) & 0xFF
+                if key != 255 and args.debug:
+                    print(f"[dbg] keycode={key}")
+                if key == 27:
+                    print("[exit] esc pressed")
+                    break
+                if not args.no_tty_quit and key == ord("q"):
+                    print("[exit] q pressed")
+                    break
+                if key == ord("v"):
+                    tts.set_enabled(not tts.enabled)
+                    print(f"Voice {'ON' if tts.enabled else 'OFF'}")
+                elif key == ord("b"):
+                    draw_boxes = not draw_boxes
+                    print(f"Boxes {'ON' if draw_boxes else 'OFF'}")
+                elif key == ord("h"):
+                    draw_hands = not draw_hands
+                    print(f"Hands {'ON' if draw_hands else 'OFF'}")
+                elif key == ord("r") and ocr_worker is not None:
+                    ocr_worker.submit("user", raw_frame)
+                    user_pending["user"] = now + 5.0
+                    print("[ocr] reading scene...")
+    finally:
+        tts.stop()
+        if depth_worker is not None:
+            depth_worker.stop()
+        if ocr_worker is not None:
+            ocr_worker.stop()
+        if cap:
+            cap.release()
+        cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

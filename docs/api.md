@@ -11,7 +11,7 @@ Real-time accessibility vision pipeline. Runs **Ultralytics YOLO11** with **Byte
 ### Signature
 
 ```
-python sonr.py [--model MODEL] [--source SOURCE] [--conf CONF] [--iou IOU] [--device DEVICE]
+python src/sonr.py [--model MODEL] [--source SOURCE] [--conf CONF] [--iou IOU] [--device DEVICE]
                [--mirror | --no-mirror]
                [--depth | --no-depth] [--metric-deadband M]
                [--ocr | --no-ocr]
@@ -108,19 +108,19 @@ Net effect: main capture/detection loop runs at full YOLO speed; all heavier ML 
 Default webcam demo:
 
 ```
-python sonr.py --source 0
+python src/sonr.py --source 0
 ```
 
 Lower confidence to catch held objects:
 
 ```
-python sonr.py --source 0 --conf 0.5
+python src/sonr.py --source 0 --conf 0.5
 ```
 
 Video file, disable depth (faster), disable mirror (text/plates in scene aren't reversed):
 
 ```
-python sonr.py --source clip.mp4 --no-mirror --no-depth
+python src/sonr.py --source clip.mp4 --no-mirror --no-depth
 ```
 
 ### Notes
@@ -132,14 +132,14 @@ python sonr.py --source clip.mp4 --no-mirror --no-depth
 
 ### Module layout
 
-The CLI script `sonr.py` orchestrates the following modules:
+All Python modules live in `src/`. The CLI script `src/sonr.py` orchestrates the following:
 
-- `detection.py` — YOLO11 wrapper with ByteTrack (`Detector`, `Detection` with `track_id`).
-- `geometry.py` — left/center/right zone helpers with hysteresis.
-- `distance.py` — distance bucketing (bbox-height fallback + metric depth).
-- `depth.py` — Depth Anything v2 wrapper (`DepthEstimator`) and threaded worker (`DepthWorker`).
-- `tracking.py` — `StableTracker` for frame-to-frame deduplication.
-- `narration.py` — phrase composition with pluralization (`SpeakItem`, `compose_phrase`).
-- `speech.py` — background-thread macOS `say` worker (`TTSWorker`).
-- `hands.py` — MediaPipe hand-landmark overlay (`HandTracker`).
-- `ocr.py` — EasyOCR-based text reader (`OcrWorker`).
+- `src/detection.py` — YOLO11 wrapper with ByteTrack (`Detector`, `Detection` with `track_id`).
+- `src/geometry.py` — left/center/right zone helpers with hysteresis.
+- `src/distance.py` — distance bucketing (bbox-height fallback + metric depth).
+- `src/depth.py` — Depth Anything v2 wrapper (`DepthEstimator`) and threaded worker (`DepthWorker`).
+- `src/tracking.py` — `StableTracker` for frame-to-frame deduplication.
+- `src/narration.py` — phrase composition with pluralization (`SpeakItem`, `compose_phrase`).
+- `src/speech.py` — background-thread macOS `say` worker (`TTSWorker`).
+- `src/hands.py` — MediaPipe hand-landmark overlay (`HandTracker`).
+- `src/ocr.py` — EasyOCR-based text reader (`OcrWorker`).

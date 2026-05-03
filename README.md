@@ -40,7 +40,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-That's it. The first time you run `python sonr.py`, it'll download model weights one-time:
+That's it. The first time you run `python src/sonr.py`, it'll download model weights one-time:
 
 | Model | Size | Source |
 |-------|------|--------|
@@ -53,7 +53,7 @@ These are cached after the first run.
 ## Running
 
 ```bash
-python sonr.py --source 0
+python src/sonr.py --source 0
 ```
 
 Use `--source 1` (or higher) for a non-default webcam. Use `--source path/to/video.mp4` to run on a video file (add `--no-mirror` for video files since they're not selfie-view).
@@ -107,7 +107,7 @@ If you'd rather not install pyenv, `brew install python@3.12` works too — then
 
 **"Could not open webcam" on first run.** macOS gates camera access per-app. Open *System Settings → Privacy & Security → Camera* and enable access for your terminal (Terminal.app or iTerm2.app).
 
-**Camera lag / preview feels choppy.** Depth estimation is the heaviest model (~125 ms/frame on M-series MPS, runs in the background). To disable: `python sonr.py --source 0 --no-depth`. Distances will fall back to a bbox-height heuristic (less accurate but free).
+**Camera lag / preview feels choppy.** Depth estimation is the heaviest model (~125 ms/frame on M-series MPS, runs in the background). To disable: `python src/sonr.py --source 0 --no-depth`. Distances will fall back to a bbox-height heuristic (less accurate but free).
 
 **OCR (`r`) returns mirrored or empty text.** The `r` key submits the unflipped raw frame, so this should already work even with `--mirror` on. If text still reads empty, the most common causes are: text too small in the frame, glare from a phone screen, or stylized fonts EasyOCR struggles with.
 
@@ -120,16 +120,19 @@ If you'd rather not install pyenv, `brew install python@3.12` works too — then
 The codebase is modular. Each module is small and single-purpose:
 
 ```
-sonr.py        - entry point, frame loop, key handling
-detection.py   - YOLO11 + ByteTrack wrapper
-geometry.py    - left/center/right zone helpers + hysteresis
-distance.py    - distance bucketing (bbox-height fallback + metric depth)
-depth.py       - Depth Anything v2 + threaded worker
-tracking.py    - StableTracker for frame-to-frame deduplication
-narration.py   - phrase composition + pluralization
-speech.py      - macOS `say` worker thread
-hands.py       - MediaPipe hand-landmark overlay
-ocr.py         - EasyOCR text reader (threaded worker)
+src/
+├── sonr.py        - entry point, frame loop, key handling
+├── detection.py   - YOLO11 + ByteTrack wrapper
+├── geometry.py    - left/center/right zone helpers + hysteresis
+├── distance.py    - distance bucketing (bbox-height fallback + metric depth)
+├── depth.py       - Depth Anything v2 + threaded worker
+├── tracking.py    - StableTracker for frame-to-frame deduplication
+├── narration.py   - phrase composition + pluralization
+├── speech.py      - macOS `say` worker thread
+├── hands.py       - MediaPipe hand-landmark overlay
+└── ocr.py         - EasyOCR text reader (threaded worker)
 ```
+
+Run `python src/sonr.py` from the project root — Python adds `src/` to its module path automatically when you invoke a script, so the cross-module imports just work without any `__init__.py` or `PYTHONPATH` setup.
 
 See [`docs/api.md`](docs/api.md) for what each module exposes and the threading model.

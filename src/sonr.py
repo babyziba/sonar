@@ -14,6 +14,7 @@ Keys: v = toggle voice, b = toggle boxes, h = toggle hand tracking,
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import cv2
@@ -31,13 +32,24 @@ from tracking import StableTracker
 WINDOW_NAME = "YOLO11 Talking Objects"
 
 
+def _env(name: str, default):
+    """Return os.environ[name] if set and non-empty, else `default`. Preserves
+    `default`'s type so callers can supply `None`, a string, a float, etc."""
+    val = os.environ.get(name)
+    return val if val not in (None, "") else default
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", type=str, default="yolo11n.pt", help="YOLO11 model path or name")
-    ap.add_argument("--source", type=str, default="0", help="Video source (0 for webcam)")
-    ap.add_argument("--conf", type=float, default=0.75, help="Confidence threshold")
+    ap.add_argument("--model", type=str, default=_env("SONR_MODEL", "yolo11n.pt"),
+                    help="YOLO11 model path or name (env: SONR_MODEL)")
+    ap.add_argument("--source", type=str, default=_env("SONR_SOURCE", "0"),
+                    help="Video source, 0 for webcam (env: SONR_SOURCE)")
+    ap.add_argument("--conf", type=float, default=float(_env("SONR_CONF", 0.75)),
+                    help="Confidence threshold (env: SONR_CONF)")
     ap.add_argument("--iou", type=float, default=0.5, help="NMS IoU")
-    ap.add_argument("--device", type=str, default=None, help="cuda, cpu, or mps")
+    ap.add_argument("--device", type=str, default=_env("SONR_DEVICE", None),
+                    help="cuda, cpu, or mps (env: SONR_DEVICE)")
     ap.add_argument("--speak-interval", type=float, default=2.0,
                     help="Seconds between announcements of the same phrase")
     ap.add_argument("--no-show", dest="show", action="store_false",

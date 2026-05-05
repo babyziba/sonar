@@ -1,5 +1,8 @@
 # Sonr
 
+[![tests](https://github.com/babyziba/sonar/actions/workflows/test.yml/badge.svg)](https://github.com/babyziba/sonar/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 The full project source code and deployment artifacts are available at:
 **https://github.com/babyziba/sonar**
 

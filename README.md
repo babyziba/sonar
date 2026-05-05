@@ -1,15 +1,23 @@
 # Sonr
 
+The full project source code and deployment artifacts are available at:
+**https://github.com/babyziba/sonar**
+
 ## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
+- [Repository Layout](#repository-layout)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Configuration](#configuration)
 - [Running](#running)
+- [Validation](#validation)
+- [Branching and Versioning Model](#branching-and-versioning-model)
 - [Python version mismatch (3.13+)](#python-version-mismatch-313)
 - [Troubleshooting](#troubleshooting)
 - [Architecture](#architecture)
+- [License](#license)
 
 ## Overview
 
@@ -23,6 +31,26 @@ Sonr is an accessibility-focused app designed to empower visually impaired users
 - MediaPipe hand-landmark overlay with correct left/right handedness (mirror-flipped frame).
 - On-demand text reading (press `r`): runs EasyOCR on the current frame and speaks any text found.
 
+## Repository Layout
+
+```
+sonar/
+├── src/                    # application source code
+├── tests/                  # pytest unit tests for pure-logic modules
+├── docs/                   # API and user documentation
+│   ├── api.md
+│   └── user_guide.md
+├── README.md               # this file (build & run instructions)
+├── DEPLOY.md               # deployment & validation guide
+├── LICENSE                 # MIT
+├── .env.example            # example configuration; copy to .env
+├── requirements.txt        # runtime dependencies
+└── requirements-dev.txt    # dev/test dependencies (pytest)
+```
+
+For a deeper deployment walk-through (clean-environment install, validation
+checklist, troubleshooting), see [`DEPLOY.md`](DEPLOY.md).
+
 ## Requirements
 
 - macOS (TTS uses the built-in `say` command).
@@ -33,7 +61,7 @@ Sonr is an accessibility-focused app designed to empower visually impaired users
 ## Installation
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/babyziba/sonar.git
 cd sonar
 python3 -m venv .venv
 source .venv/bin/activate
@@ -49,6 +77,41 @@ That's it. The first time you run `python src/sonr.py`, it'll download model wei
 | EasyOCR detector + recognition | ~64 MB | EasyOCR auto-download |
 
 These are cached after the first run.
+
+To run the test suite locally, also install the dev dependencies:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+## Configuration
+
+Sonr reads configuration from three sources, in order of precedence (later
+sources override earlier ones):
+
+1. Built-in defaults in `src/sonr.py`
+2. Environment variables (see `.env.example` for the supported set)
+3. Command-line flags (full reference in [`docs/api.md`](docs/api.md))
+
+Most users only need the CLI flags. The env vars are there to make
+deployment scripts and `.env` files possible without re-stating the same
+flags every run. Common ones:
+
+| Env var       | Equivalent flag | Default       |
+| ------------- | --------------- | ------------- |
+| `SONR_MODEL`  | `--model`       | `yolo11n.pt`  |
+| `SONR_SOURCE` | `--source`      | `0`           |
+| `SONR_DEVICE` | `--device`      | (auto)        |
+| `SONR_CONF`   | `--conf`        | `0.75`        |
+
+To use a `.env` file:
+
+```bash
+cp .env.example .env
+# edit .env to taste
+set -a; source .env; set +a
+python src/sonr.py
+```
 
 ## Running
 
@@ -69,6 +132,36 @@ Keys during the run:
 | `q` or `ESC` | Quit |
 
 See [`docs/api.md`](docs/api.md) for the full CLI flag reference, distance-bucket thresholds, and tuning knobs.
+
+## Validation
+
+Use these steps to confirm a fresh install is healthy. The full validation
+checklist (with expected output and failure modes) lives in
+[`DEPLOY.md`](DEPLOY.md#validation).
+
+```bash
+# 1. CLI parses
+python src/sonr.py --help
+
+# 2. Unit tests pass (pure-logic modules; no camera or models needed)
+pytest
+
+# 3. Smoke run with the camera
+python src/sonr.py --source 0
+```
+
+## Branching and Versioning Model
+
+This repository uses a two-branch model:
+
+| Branch | Purpose                                                              |
+| ------ | -------------------------------------------------------------------- |
+| `main` | Stable / submission-ready. Default branch. Reviewed changes only.    |
+| `dev`  | Active development. New work happens here and is promoted to `main`. |
+
+Tagged releases (when produced) live on `main` as `vMAJOR.MINOR.PATCH` tags.
+Day-to-day changes go to `dev`; once a change is reviewed and validated
+(tests green, smoke run succeeds), it is merged into `main`.
 
 ## Python version mismatch (3.13+)
 
@@ -136,3 +229,7 @@ src/
 Run `python src/sonr.py` from the project root — Python adds `src/` to its module path automatically when you invoke a script, so the cross-module imports just work without any `__init__.py` or `PYTHONPATH` setup.
 
 See [`docs/api.md`](docs/api.md) for what each module exposes and the threading model.
+
+## License
+
+Released under the [MIT License](LICENSE).

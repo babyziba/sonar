@@ -1,4 +1,4 @@
-# Sonr
+# Spatial Object Navigation & Recognition (SONR)
 
 [![tests](https://github.com/babyziba/sonar/actions/workflows/test.yml/badge.svg)](https://github.com/babyziba/sonar/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
